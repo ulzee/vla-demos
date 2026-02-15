@@ -92,20 +92,35 @@ for task_index in metadata['task_index'].unique():
     task0 = metadata[metadata['task_index'] == task_index]
     print(task0['task'].iloc[0])
     counter = 0
-    for ep_index in task0['episode_index'].unique():
+
+    open_ls = []
+    closed_ls = []
+    episodes = task0['episode_index'].unique()
+    for ep_index in episodes[:10]:
         ep0 = task0[task0['episode_index'] == ep_index]
-        nframes = len(ep0)
-        # print(task_index, ep_index, len(ep0))
-        images_open += [ep0.iloc[int(nframes*0)]['index'].item()]
-        images_closed += [ep0.iloc[int(nframes*0.9)]['index'].item()]
-        counter += 1
-        if counter == limit_per_task:
-            break
+
+        for didx in tqdm(ep0.index):
+            claw_state = dataset[didx]['action'][-1]
+            if claw_state == -1:
+                open_ls += [didx]
+            elif claw_state == 1:
+                closed_ls += [didx]
+
+    images_open += np.random.choice(open_ls, 100).tolist()
+    images_closed += np.random.choice(closed_ls, 100).tolist()
+
+        # nframes = len(ep0)
+        # # print(task_index, ep_index, len(ep0))
+        # images_open += [ep0.iloc[int(nframes*0)]['index'].item()]
+        # images_closed += [ep0.iloc[int(nframes*0.9)]['index'].item()]
+        # counter += 1
+        # if counter == limit_per_task:
+        #     break
 len(images_open), len(images_closed)
 # %%
 tiled = torch.cat([
-    torch.cat([dataset[images_closed[i*10]]['observation.images.image'] for i in range(10)], dim=2),
-    torch.cat([dataset[images_open[i*10]]['observation.images.image'] for i in range(10)], dim=2)
+    torch.cat([dataset[images_closed[np.random.choice(1000)]]['observation.images.image'] for i in range(10)], dim=2),
+    torch.cat([dataset[images_open[np.random.choice(1000)]]['observation.images.image'] for i in range(10)], dim=2)
 ], dim=1)
 t2i(tiled)
 # %%
@@ -203,22 +218,24 @@ def data_collator(features):
     return result
 #%%
 # Prepare dataset and dataloader
-train_dataset = RobotHoldingDataset(images_open[:80], images_closed[:80], dataset, processor)
-eval_dataset = RobotHoldingDataset(images_open[80:], images_closed[80:], dataset, processor)
+neval = 100
+train_dataset = RobotHoldingDataset(images_open[:-neval], images_closed[:-neval], dataset, processor)
+eval_dataset = RobotHoldingDataset(images_open[-neval:], images_closed[-neval:], dataset, processor)
 
 # Define training args
 training_args = TrainingArguments(
     output_dir="saved/task0-qwen3vl-finetuned",
-    per_device_train_batch_size=8,
+    per_device_train_batch_size=16,
     num_train_epochs=1,
-    learning_rate=1e-5,
+    learning_rate=1e-6,
     weight_decay=0.01,
     save_strategy="epoch",
     bf16=torch.cuda.is_available(),
-    logging_steps=1,
+    logging_steps=10,
     report_to="none",
 )
 #%%
+loss_history = []
 eval_loader = DataLoader(eval_dataset, batch_size=2, shuffle=False, collate_fn=data_collator)
 for epochs in range(3):
 
@@ -257,52 +274,13 @@ for epochs in range(3):
     )
 
     trainer.train()
-# %%
-loss_hist = [
-    3.819836,
-    0.719114,
-    2.909363,
-    4.556492,
-    0.916958,
-    0.274763,
-    1.584518,
-    0.495613,
-    0.684898,
-    0.704381,
-    0.505731,
-    0.997115,
-    0.464982,
-    0.146277,
-    0.174334,
-    0.152900,
-    0.103692,
-    0.167353,
-    0.330080,
-    0.111023,
-    0.341953,
-    2.596914,
-    1.574021,
-    0.350240,
-    0.078814,
-    0.016668,
-    0.184055,
-    0.606639,
-    0.130566,
-    0.050216,
-    0.011844,
-    0.001144,
-    0.004525,
-    0.002666,
-    0.002379,
-    0.000778,
-    0.000577,
-    0.000189,
-    0.000216,
-    0.000450,
 
-]
-plt.figure()
+    history = pd.DataFrame(trainer.state.log_history)
+    loss_history += history['loss'].values.tolist()
+# %%
+plt.figure(figsize=(5, 3))
 plt.title('Loss (last token "yes" or "no")')
-plt.plot(loss_hist)
+plt.plot(loss_history)
+plt.xlabel('Epochs')
 plt.show()
 # %%
