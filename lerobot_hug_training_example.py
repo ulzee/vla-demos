@@ -235,9 +235,9 @@ training_args = TrainingArguments(
     report_to="none",
 )
 #%%
-loss_history = []
+# loss_history = []
 eval_loader = DataLoader(eval_dataset, batch_size=2, shuffle=False, collate_fn=data_collator)
-for epochs in range(3):
+for epochs in range(6):
 
     model.eval()
 
@@ -263,8 +263,8 @@ for epochs in range(3):
     cm = confusion_matrix(*zip(*pairs), labels=labels)
     print(cm)
 
-    if epochs == 2:
-        break
+    # if epochs == 2:
+    #     break
     model.train()
     trainer = Trainer(
         model=model,
@@ -284,3 +284,89 @@ plt.plot(loss_history)
 plt.xlabel('Epochs')
 plt.show()
 # %%
+# --- ResNet benchmark: simple classifier for claw open/closed ---
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import models, transforms
+
+
+class ResNetClawDataset(Dataset):
+    """Dataset for ResNet: raw images + binary label (0=open, 1=closed)."""
+
+    def __init__(self, images_open, images_closed, dataset, transform=None):
+        self.samples = []
+        for idx in images_open:
+            img = dataset[idx]["observation.images.image"]  # (C,H,W), [0,1]
+            self.samples.append((img, 0))
+        for idx in images_closed:
+            img = dataset[idx]["observation.images.image"]
+            self.samples.append((img, 1))
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        img, label = self.samples[idx]
+        if self.transform:
+            img = self.transform(img)
+        return img, label
+
+
+# Standard ImageNet normalization for pretrained ResNet
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+])
+
+resnet_train = ResNetClawDataset(images_open[:-neval], images_closed[:-neval], dataset, transform)
+resnet_eval = ResNetClawDataset(images_open[-neval:], images_closed[-neval:], dataset, transform)
+resnet_train_loader = DataLoader(resnet_train, batch_size=32, shuffle=True, num_workers=0)
+resnet_eval_loader = DataLoader(resnet_eval, batch_size=32, shuffle=False)
+
+#%%
+
+# comparison against resnet
+
+model_resnet = models.resnet34()
+model_resnet.fc = nn.Linear(model_resnet.fc.in_features, 2)
+model_resnet = model_resnet.to("cuda" if torch.cuda.is_available() else "cpu")
+device = next(model_resnet.parameters()).device
+optimizer = optim.AdamW(model_resnet.parameters(), lr=1e-3, weight_decay=0.01)
+criterion = nn.CrossEntropyLoss()
+
+# Training loop
+num_epochs = 20
+for epoch in range(num_epochs):
+    model_resnet.train()
+    total_loss, n = 0.0, 0
+    for imgs, labels in resnet_train_loader:
+        imgs, labels = imgs.to(device), labels.to(device)
+        optimizer.zero_grad()
+        logits = model_resnet(imgs)
+        loss = criterion(logits, labels)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item() * imgs.size(0)
+        n += imgs.size(0)
+    train_loss = total_loss / n
+
+    model_resnet.eval()
+    # correct, total = 0, 0
+    preds = []
+    labels = []
+    with torch.no_grad():
+        for imgs, ytrue in resnet_eval_loader:
+            imgs, ytrue = imgs.to(device), ytrue.to(device)
+            yh = model_resnet(imgs).argmax(dim=1)
+            preds += [y.item() for y in yh]
+            labels += [l.item() for l in ytrue]
+            # correct += (preds == labels).sum().item()
+            # total += labels.size(0)
+    eval_acc = sum([y == yh for y, yh in zip(labels, preds)]) / len(preds)
+    print(f"Epoch {epoch+1}/{num_epochs}  train_loss={train_loss:.4f}  eval_acc={eval_acc:.2%}")
+# %%
+print(confusion_matrix(labels, preds))
+print(confusion_matrix(*zip(*pairs), labels=['yes','no']))
