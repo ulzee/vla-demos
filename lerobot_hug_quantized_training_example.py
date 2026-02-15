@@ -12,6 +12,8 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import Trainer, TrainingArguments
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
+from peft import LoraConfig, get_peft_model
+from transformers import BitsAndBytesConfig
 # %%
 dataset = LeRobotDataset("lerobot/libero_10")
 # %%
@@ -43,6 +45,47 @@ model = Qwen3VLForConditionalGeneration.from_pretrained(
 )
 # %%
 processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-2B-Instruct")
+#%%
+# bnb_config = BitsAndBytesConfig(
+#     load_in_4bit=True,
+#     bnb_4bit_use_double_quant=True,
+#     bnb_4bit_quant_type="nf4",
+#     bnb_4bit_compute_type=torch.bfloat16,
+# )
+
+# model = Qwen3VLForConditionalGeneration.from_pretrained(
+#     "Qwen/Qwen3-VL-2B-Instruct",
+#     quantization_config=bnb_config,
+#     # dtype="auto", device_map="auto"
+#     torch_dtype=torch.bfloat16,
+# )
+# model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+#     qwen_model_id,
+#     # device_map={"": "cuda:0"},  # Use the explicit map
+#     quantization_config=bnb_config,
+#     torch_dtype=torch.bfloat16,
+#     **extra_kwargs,
+# )
+
+lora_rank = 64
+lora_config = LoraConfig(
+    lora_alpha=16,
+    lora_dropout=0.05,
+    r=lora_rank,
+    bias="none",
+    # target_modules=["q_proj", "v_proj", "fc"],
+    target_modules=["all-linear"],
+    task_type="CAUSAL_LM",
+)
+
+
+model.add_adapter(lora_config, adapter_name="lora_1")
+#%%
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+total_params = sum(p.numel() for p in model.parameters())
+percent = 100 * trainable_params / total_params if total_params > 0 else 0
+print(f"Trainable parameters in model: {trainable_params} / {total_params} ({percent:.2f}%)")
+# lora_model = get_peft_model(model, lora_config)
 
 # %%
 messages = [
